@@ -21,4 +21,5 @@ matplotlib
 plotly
 python-multipart
 pyyaml
+torchcodec
 
