@@ -1,15 +1,27 @@
 import json
+import csv
 from pathlib import Path
 
 import librosa
-import torch
 from transformers import pipeline
 
-INPUT_DIR = Path("separated/htdemucs")
+INPUT_DIR = Path("data/separated/htdemucs")
 
 OUTPUT_JSON = Path("data/metadata/emotion_predictions.json")
+OUTPUT_CSV = Path("data/metadata/emotion_predictions.csv")
 
 TARGET_SR = 16000
+
+EMOTIONS = [
+    "happy",
+    "sad",
+    "angry",
+    "fearful",
+    "neutral",
+    "surprised",
+    "suprised",
+    "surprized"
+]
 
 
 print("Loading emotion recognition model...")
@@ -20,6 +32,17 @@ classifier = pipeline(
 )
 
 print("Model loaded successfully")
+
+
+def extract_true_label(filepath: str):
+
+    filename = filepath.lower()
+
+    for emotion in EMOTIONS:
+        if emotion in filename:
+            return emotion
+
+    return "unknown"
 
 
 def predict_emotion(audio_path: Path):
@@ -36,19 +59,49 @@ def predict_emotion(audio_path: Path):
 
     top_prediction = prediction[0]
 
+    predicted_label = top_prediction["label"].lower()
+
+    true_label = extract_true_label(str(audio_path))
+
     result = {
         "file": str(audio_path),
-        "emotion": top_prediction["label"],
+        "true_label": true_label,
+        "predicted_label": predicted_label,
         "confidence": float(top_prediction["score"])
     }
 
     print(
-        f"Prediction: "
-        f"{result['emotion']} "
-        f"({result['confidence']:.4f})"
+        f"True: {true_label} | "
+        f"Predicted: {predicted_label} | "
+        f"Confidence: {result['confidence']:.4f}"
     )
 
     return result
+
+
+def save_csv(results):
+
+    OUTPUT_CSV.parent.mkdir(
+        parents=True,
+        exist_ok=True
+    )
+
+    with open(OUTPUT_CSV, "w", newline="") as csvfile:
+
+        writer = csv.DictWriter(
+            csvfile,
+            fieldnames=[
+                "file",
+                "true_label",
+                "predicted_label",
+                "confidence"
+            ]
+        )
+
+        writer.writeheader()
+        writer.writerows(results)
+
+    print(f"\nSaved CSV: {OUTPUT_CSV}")
 
 
 def main():
@@ -79,8 +132,9 @@ def main():
     with open(OUTPUT_JSON, "w") as f:
         json.dump(results, f, indent=4)
 
-    print("\nSaved predictions")
-    print(f"Output: {OUTPUT_JSON}")
+    print(f"\nSaved JSON: {OUTPUT_JSON}")
+
+    save_csv(results)
 
 
 if __name__ == "__main__":
