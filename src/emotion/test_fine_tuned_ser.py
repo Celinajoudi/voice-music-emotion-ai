@@ -1,3 +1,4 @@
+import argparse
 from pathlib import Path
 
 import librosa
@@ -6,8 +7,8 @@ import torch
 from sklearn.metrics import accuracy_score, classification_report, confusion_matrix
 from transformers import AutoFeatureExtractor, AutoModelForAudioClassification
 
-MODEL_DIR = "models/fine_tuned_ser"
-TEST_CSV = "data/metadata/test.csv"
+MODEL_DIR = Path("models/fine_tuned_ser")
+TEST_CSV = Path("data/metadata/test.csv")
 
 OUTPUT_REPORT = Path("data/metadata/fine_tuned_evaluation_report.txt")
 OUTPUT_CONFUSION = Path("data/metadata/fine_tuned_confusion_matrix.csv")
@@ -15,18 +16,19 @@ OUTPUT_PREDICTIONS = Path("data/metadata/fine_tuned_predictions.csv")
 
 TARGET_SR = 16000
 
-feature_extractor = AutoFeatureExtractor.from_pretrained(MODEL_DIR)
-model = AutoModelForAudioClassification.from_pretrained(MODEL_DIR)
-
-model.eval()
-
-device = "mps" if torch.backends.mps.is_available() else "cpu"
-model.to(device)
-
-print(f"Using device: {device}")
+LABEL_NORMALIZATION = {
+    "suprised": "surprised",
+    "surprized": "surprised",
+}
 
 
-def predict(filepath):
+def normalize_label(label):
+    label = str(label).strip().lower()
+
+    return LABEL_NORMALIZATION.get(label, label)
+
+
+def predict(filepath, feature_extractor, model, device):
     audio, _ = librosa.load(filepath, sr=TARGET_SR, mono=True)
 
     inputs = feature_extractor(
@@ -51,12 +53,30 @@ def predict(filepath):
 
 
 def main():
-    df = pd.read_csv(TEST_CSV)
+    args = parse_args()
+
+    feature_extractor = AutoFeatureExtractor.from_pretrained(args.model_dir)
+    model = AutoModelForAudioClassification.from_pretrained(args.model_dir)
+
+    model.eval()
+
+    device = "mps" if torch.backends.mps.is_available() else "cpu"
+    model.to(device)
+
+    print(f"Using device: {device}")
+
+    df = pd.read_csv(args.test_csv)
+    df["label"] = df["label"].map(normalize_label)
 
     results = []
 
     for _, row in df.iterrows():
-        pred_label, confidence = predict(row["filepath"])
+        pred_label, confidence = predict(
+            row["filepath"],
+            feature_extractor,
+            model,
+            device
+        )
 
         results.append({
             "filepath": row["filepath"],
@@ -104,6 +124,26 @@ def main():
     print("\nEvaluation complete")
     print(f"Accuracy: {accuracy:.4f}")
     print(f"Saved report to: {OUTPUT_REPORT}")
+
+
+def parse_args():
+    parser = argparse.ArgumentParser(
+        description="Evaluate a fine-tuned speech emotion recognition model."
+    )
+    parser.add_argument(
+        "--model-dir",
+        type=Path,
+        default=MODEL_DIR,
+        help="Fine-tuned model directory.",
+    )
+    parser.add_argument(
+        "--test-csv",
+        type=Path,
+        default=TEST_CSV,
+        help="Test CSV with filepath and label columns.",
+    )
+
+    return parser.parse_args()
 
 
 if __name__ == "__main__":

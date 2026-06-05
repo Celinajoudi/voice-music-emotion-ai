@@ -186,8 +186,13 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--learning-rate",
         type=float,
-        default=3e-5,
+        default=1e-5,
         help="Learning rate.",
+    )
+    parser.add_argument(
+        "--freeze-feature-encoder",
+        action="store_true",
+        help="Freeze the Wav2Vec2 feature encoder and train only later layers.",
     )
 
     return parser.parse_args()
@@ -217,8 +222,9 @@ def main() -> None:
         ignore_mismatched_sizes=True,
     )
 
-    if hasattr(model, "freeze_feature_encoder"):
+    if args.freeze_feature_encoder and hasattr(model, "freeze_feature_encoder"):
         model.freeze_feature_encoder()
+        print("Feature encoder frozen")
 
     training_args = build_training_args(args)
 
