@@ -1,5 +1,5 @@
+import argparse
 from pathlib import Path
-import random
 
 import pandas as pd
 from sklearn.model_selection import train_test_split
@@ -36,15 +36,31 @@ def extract_label(filename):
     return None
 
 
-def main():
+def load_from_csv(input_csv):
+    df = pd.read_csv(input_csv)
 
-    audio_files = list(INPUT_DIR.glob("*.wav"))
+    required_columns = {"filepath", "label"}
+    missing_columns = required_columns - set(df.columns)
+
+    if missing_columns:
+        raise ValueError(
+            f"{input_csv} is missing required columns: {sorted(missing_columns)}"
+        )
+
+    return df[["filepath", "label"]].dropna()
+
+
+def load_from_directory(input_dir, filename_pattern):
+    audio_files = list(input_dir.rglob(filename_pattern))
 
     rows = []
 
     for file in audio_files:
 
         label = extract_label(file.name)
+
+        if label is None:
+            label = extract_label(file.parent.name)
 
         if label is None:
             continue
@@ -54,9 +70,53 @@ def main():
             "label": label
         })
 
-    df = pd.DataFrame(rows)
+    return pd.DataFrame(rows)
+
+
+def parse_args():
+    parser = argparse.ArgumentParser(
+        description="Create train/validation/test CSV splits for SER training."
+    )
+    parser.add_argument(
+        "--input-dir",
+        type=Path,
+        default=INPUT_DIR,
+        help="Directory containing labeled WAV files.",
+    )
+    parser.add_argument(
+        "--filename-pattern",
+        default="*.wav",
+        help="Filename pattern to include, for example vocals.wav for Demucs outputs.",
+    )
+    parser.add_argument(
+        "--input-csv",
+        type=Path,
+        default=None,
+        help="Optional CSV with filepath and label columns.",
+    )
+    parser.add_argument(
+        "--output-dir",
+        type=Path,
+        default=OUTPUT_DIR,
+        help="Directory where train.csv, val.csv, and test.csv will be saved.",
+    )
+
+    return parser.parse_args()
+
+
+def main():
+    args = parse_args()
+
+    if args.input_csv is not None:
+        df = load_from_csv(args.input_csv)
+    else:
+        df = load_from_directory(args.input_dir, args.filename_pattern)
 
     print(f"Total labeled samples: {len(df)}")
+
+    if df.empty:
+        print("No labeled audio files found.")
+        return
 
     train_df, test_df = train_test_split(
         df,
@@ -72,23 +132,23 @@ def main():
         random_state=RANDOM_SEED
     )
 
-    OUTPUT_DIR.mkdir(
+    args.output_dir.mkdir(
         parents=True,
         exist_ok=True
     )
 
     train_df.to_csv(
-        OUTPUT_DIR / "train.csv",
+        args.output_dir / "train.csv",
         index=False
     )
 
     val_df.to_csv(
-        OUTPUT_DIR / "val.csv",
+        args.output_dir / "val.csv",
         index=False
     )
 
     test_df.to_csv(
-        OUTPUT_DIR / "test.csv",
+        args.output_dir / "test.csv",
         index=False
     )
 
@@ -100,4 +160,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
