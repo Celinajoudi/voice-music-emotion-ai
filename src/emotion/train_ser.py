@@ -1,30 +1,31 @@
-from datasets import Dataset
-from transformers import (
-    AutoFeatureExtractor,
-    AutoModelForAudioClassification,
-    TrainingArguments,
-    Trainer,
-    DataCollatorWithPadding
-)
-    
-
+import argparse
+from pathlib import Path
 
 import librosa
 import numpy as np
 import pandas as pd
-import torch
+from datasets import Dataset
+from sklearn.metrics import accuracy_score, f1_score
+from transformers import (
+    AutoFeatureExtractor,
+    AutoModelForAudioClassification,
+    DataCollatorWithPadding,
+    Trainer,
+    TrainingArguments,
+)
 
-MODEL_NAME = "facebook/wav2vec2-base"
-
-TRAIN_CSV = "data/metadata/train.csv"
-VAL_CSV = "data/metadata/val.csv"
+DEFAULT_MODEL_NAME = "facebook/wav2vec2-base"
+DEFAULT_TRAIN_CSV = Path("data/metadata/train_augmented.csv")
+DEFAULT_VAL_CSV = Path("data/metadata/val.csv")
+DEFAULT_OUTPUT_DIR = Path("checkpoints/ser_model")
+DEFAULT_MODEL_DIR = Path("models/fine_tuned_ser")
 
 TARGET_SR = 16000
 
-BATCH_SIZE = 1
-
-EPOCHS = 2
-
+LABEL_NORMALIZATION = {
+    "suprised": "surprised",
+    "surprized": "surprised",
+}
 
 LABELS = [
     "angry",
@@ -33,119 +34,202 @@ LABELS = [
     "neutral",
     "sad",
     "surprised",
-    "suprised",
-    "surprized"
 ]
 
 label2id = {
-    label: i for i, label in enumerate(LABELS)
+    label: index
+    for index, label in enumerate(LABELS)
 }
 
 id2label = {
-    i: label for label, i in label2id.items()
+    index: label
+    for label, index in label2id.items()
 }
 
 
-feature_extractor = AutoFeatureExtractor.from_pretrained(
-    MODEL_NAME
-)
+def normalize_label(label: str) -> str:
+    label = str(label).strip().lower()
+
+    return LABEL_NORMALIZATION.get(label, label)
 
 
-def load_dataset(csv_path):
-
+def load_audio_dataset(csv_path: Path) -> Dataset:
     df = pd.read_csv(csv_path)
 
-    return Dataset.from_pandas(df)
+    required_columns = {"filepath", "label"}
+    missing_columns = required_columns - set(df.columns)
+
+    if missing_columns:
+        raise ValueError(
+            f"{csv_path} is missing required columns: {sorted(missing_columns)}"
+        )
+
+    df = df[["filepath", "label"]].dropna()
+    df["label"] = df["label"].map(normalize_label)
+    df = df[df["label"].isin(LABELS)]
+
+    if df.empty:
+        raise ValueError(f"No valid labeled rows found in {csv_path}")
+
+    print(f"Loaded {len(df)} rows from {csv_path}")
+    print(df["label"].value_counts().sort_index())
+
+    return Dataset.from_pandas(df, preserve_index=False)
 
 
-train_dataset = load_dataset(TRAIN_CSV)
-val_dataset = load_dataset(VAL_CSV)
+def build_preprocess_fn(feature_extractor):
+    def preprocess(example):
+        audio, _ = librosa.load(
+            example["filepath"],
+            sr=TARGET_SR,
+            mono=True,
+        )
+
+        inputs = feature_extractor(
+            audio,
+            sampling_rate=TARGET_SR,
+            return_tensors="pt",
+            padding=False,
+        )
+
+        example["input_values"] = inputs.input_values[0]
+        example["label"] = label2id[example["label"]]
+
+        return example
+
+    return preprocess
 
 
-def preprocess(example):
+def compute_metrics(eval_prediction):
+    logits, labels = eval_prediction
+    predictions = np.argmax(logits, axis=-1)
 
-    audio, sr = librosa.load(
-        example["filepath"],
-        sr=TARGET_SR,
-        mono=True
+    return {
+        "accuracy": accuracy_score(labels, predictions),
+        "macro_f1": f1_score(labels, predictions, average="macro"),
+    }
+
+
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        description="Fine-tune a Wav2Vec2 speech emotion recognition model."
+    )
+    parser.add_argument(
+        "--model-name",
+        default=DEFAULT_MODEL_NAME,
+        help="Hugging Face model checkpoint to fine-tune.",
+    )
+    parser.add_argument(
+        "--train-csv",
+        type=Path,
+        default=DEFAULT_TRAIN_CSV,
+        help="Training CSV with filepath and label columns.",
+    )
+    parser.add_argument(
+        "--val-csv",
+        type=Path,
+        default=DEFAULT_VAL_CSV,
+        help="Validation CSV with filepath and label columns.",
+    )
+    parser.add_argument(
+        "--output-dir",
+        type=Path,
+        default=DEFAULT_OUTPUT_DIR,
+        help="Checkpoint output directory.",
+    )
+    parser.add_argument(
+        "--model-dir",
+        type=Path,
+        default=DEFAULT_MODEL_DIR,
+        help="Final fine-tuned model directory.",
+    )
+    parser.add_argument(
+        "--epochs",
+        type=float,
+        default=10,
+        help="Number of training epochs.",
+    )
+    parser.add_argument(
+        "--batch-size",
+        type=int,
+        default=2,
+        help="Batch size per device.",
+    )
+    parser.add_argument(
+        "--learning-rate",
+        type=float,
+        default=3e-5,
+        help="Learning rate.",
     )
 
-    inputs = feature_extractor(
-        audio,
-        sampling_rate=TARGET_SR,
-        return_tensors="pt",
-        padding=True
+    return parser.parse_args()
+
+
+def main() -> None:
+    args = parse_args()
+
+    feature_extractor = AutoFeatureExtractor.from_pretrained(args.model_name)
+
+    train_dataset = load_audio_dataset(args.train_csv)
+    val_dataset = load_audio_dataset(args.val_csv)
+
+    preprocess = build_preprocess_fn(feature_extractor)
+
+    print("Preprocessing training dataset...")
+    train_dataset = train_dataset.map(preprocess)
+
+    print("Preprocessing validation dataset...")
+    val_dataset = val_dataset.map(preprocess)
+
+    model = AutoModelForAudioClassification.from_pretrained(
+        args.model_name,
+        num_labels=len(LABELS),
+        label2id=label2id,
+        id2label=id2label,
+        ignore_mismatched_sizes=True,
     )
 
-    example["input_values"] = inputs.input_values[0]
+    if hasattr(model, "freeze_feature_encoder"):
+        model.freeze_feature_encoder()
 
-    example["label"] = label2id[
-        example["label"]
-    ]
+    training_args = TrainingArguments(
+        output_dir=str(args.output_dir),
+        learning_rate=args.learning_rate,
+        per_device_train_batch_size=args.batch_size,
+        per_device_eval_batch_size=args.batch_size,
+        gradient_accumulation_steps=2,
+        num_train_epochs=args.epochs,
+        weight_decay=0.01,
+        logging_steps=10,
+        evaluation_strategy="epoch",
+        save_strategy="epoch",
+        load_best_model_at_end=True,
+        metric_for_best_model="macro_f1",
+        greater_is_better=True,
+        remove_unused_columns=True,
+    )
 
-    return example
+    data_collator = DataCollatorWithPadding(feature_extractor)
 
+    trainer = Trainer(
+        model=model,
+        args=training_args,
+        train_dataset=train_dataset,
+        eval_dataset=val_dataset,
+        data_collator=data_collator,
+        compute_metrics=compute_metrics,
+    )
 
-print("Preprocessing training dataset...")
+    print("\nStarting training...\n")
+    trainer.train()
 
-train_dataset = train_dataset.map(preprocess)
+    print("\nTraining complete")
 
-print("Preprocessing validation dataset...")
+    trainer.save_model(str(args.model_dir))
+    feature_extractor.save_pretrained(str(args.model_dir))
 
-val_dataset = val_dataset.map(preprocess)
-
-
-model = AutoModelForAudioClassification.from_pretrained(
-    MODEL_NAME,
-    num_labels=len(LABELS),
-    label2id=label2id,
-    id2label=id2label
-)
-
-model.freeze_feature_encoder()
-
-training_args = TrainingArguments(
-    output_dir="checkpoints/ser_model",
-    learning_rate=1e-5,
-    per_device_train_batch_size=BATCH_SIZE,
-    per_device_eval_batch_size=BATCH_SIZE,
-    gradient_accumulation_steps=4,
-    num_train_epochs=EPOCHS,
-    weight_decay=0.01,
-    logging_steps=10
-)
-
-
-
-data_collator = DataCollatorWithPadding(
-    feature_extractor
-)
+    print(f"\nModel saved to {args.model_dir}")
 
 
- 
-trainer = Trainer(
-    model=model,
-    args=training_args,
-    train_dataset=train_dataset,
-    eval_dataset=val_dataset,
-    data_collator=data_collator
-)
-
-
-
-print("\nStarting training...\n")
-
-trainer.train()
-
-print("\nTraining complete")
-
-trainer.save_model(
-    "models/fine_tuned_ser"
-)
-
-feature_extractor.save_pretrained(
-    "models/fine_tuned_ser"
-)
-
-print("\nModel saved to models/fine_tuned_ser")
-
+if __name__ == "__main__":
+    main()
