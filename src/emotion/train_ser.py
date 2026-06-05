@@ -1,4 +1,5 @@
 import argparse
+import inspect
 from pathlib import Path
 
 import librosa
@@ -110,6 +111,33 @@ def compute_metrics(eval_prediction):
     }
 
 
+def build_training_args(args: argparse.Namespace) -> TrainingArguments:
+    strategy_key = (
+        "eval_strategy"
+        if "eval_strategy" in inspect.signature(TrainingArguments.__init__).parameters
+        else "evaluation_strategy"
+    )
+
+    training_arg_values = {
+        "output_dir": str(args.output_dir),
+        "learning_rate": args.learning_rate,
+        "per_device_train_batch_size": args.batch_size,
+        "per_device_eval_batch_size": args.batch_size,
+        "gradient_accumulation_steps": 2,
+        "num_train_epochs": args.epochs,
+        "weight_decay": 0.01,
+        "logging_steps": 10,
+        strategy_key: "epoch",
+        "save_strategy": "epoch",
+        "load_best_model_at_end": True,
+        "metric_for_best_model": "macro_f1",
+        "greater_is_better": True,
+        "remove_unused_columns": True,
+    }
+
+    return TrainingArguments(**training_arg_values)
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Fine-tune a Wav2Vec2 speech emotion recognition model."
@@ -192,22 +220,7 @@ def main() -> None:
     if hasattr(model, "freeze_feature_encoder"):
         model.freeze_feature_encoder()
 
-    training_args = TrainingArguments(
-        output_dir=str(args.output_dir),
-        learning_rate=args.learning_rate,
-        per_device_train_batch_size=args.batch_size,
-        per_device_eval_batch_size=args.batch_size,
-        gradient_accumulation_steps=2,
-        num_train_epochs=args.epochs,
-        weight_decay=0.01,
-        logging_steps=10,
-        evaluation_strategy="epoch",
-        save_strategy="epoch",
-        load_best_model_at_end=True,
-        metric_for_best_model="macro_f1",
-        greater_is_better=True,
-        remove_unused_columns=True,
-    )
+    training_args = build_training_args(args)
 
     data_collator = DataCollatorWithPadding(feature_extractor)
 
