@@ -1,7 +1,8 @@
 import argparse
 import csv
+import io
 import math
-import shutil
+import zipfile
 from pathlib import Path
 
 import numpy as np
@@ -62,8 +63,39 @@ def find_audio_files(esd_root: Path) -> list[tuple[Path, str]]:
     return rows
 
 
+def find_audio_files_in_zip(esd_zip: Path) -> list[tuple[str, str]]:
+    rows = []
+
+    with zipfile.ZipFile(esd_zip) as archive:
+        for name in sorted(archive.namelist()):
+            if not name.lower().endswith(".wav"):
+                continue
+
+            label = detect_label(Path(name))
+
+            if label is None:
+                continue
+
+            rows.append((name, label))
+
+    return rows
+
+
 def load_audio(audio_path: Path) -> tuple[np.ndarray, int]:
     audio, sample_rate = sf.read(audio_path, dtype="float32")
+    return normalize_audio(audio, sample_rate)
+
+
+def load_audio_from_zip(esd_zip: Path, member_name: str) -> tuple[np.ndarray, int]:
+    with zipfile.ZipFile(esd_zip) as archive:
+        with archive.open(member_name) as member:
+            audio_bytes = io.BytesIO(member.read())
+
+    audio, sample_rate = sf.read(audio_bytes, dtype="float32")
+    return normalize_audio(audio, sample_rate)
+
+
+def normalize_audio(audio: np.ndarray, sample_rate: int) -> tuple[np.ndarray, int]:
 
     if audio.ndim > 1:
         audio = np.mean(audio, axis=1)
@@ -91,6 +123,12 @@ def write_audio(source_path: Path, output_path: Path) -> None:
     sf.write(output_path, audio, sample_rate)
 
 
+def write_audio_from_zip(esd_zip: Path, member_name: str, output_path: Path) -> None:
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    audio, sample_rate = load_audio_from_zip(esd_zip, member_name)
+    sf.write(output_path, audio, sample_rate)
+
+
 def select_balanced_rows(
     rows: list[tuple[Path, str]],
     max_per_label: int,
@@ -111,21 +149,32 @@ def select_balanced_rows(
 
 def import_esd(
     esd_root: Path,
+    esd_zip: Path | None,
     output_dir: Path,
     output_csv: Path,
     max_per_label: int,
 ) -> None:
-    rows = find_audio_files(esd_root)
+    if esd_zip is not None:
+        rows = find_audio_files_in_zip(esd_zip)
+        source_description = esd_zip
+    else:
+        rows = find_audio_files(esd_root)
+        source_description = esd_root
 
     if not rows:
-        raise ValueError(f"No labeled WAV files found under {esd_root}")
+        raise ValueError(f"No labeled WAV files found in {source_description}")
 
     selected_rows = select_balanced_rows(rows, max_per_label)
     output_rows = []
 
     for index, (source_path, label) in enumerate(selected_rows, start=1):
         output_path = output_dir / label / f"esd_{label}_{index:04d}.wav"
-        write_audio(source_path, output_path)
+
+        if esd_zip is not None:
+            write_audio_from_zip(esd_zip, str(source_path), output_path)
+        else:
+            write_audio(Path(source_path), output_path)
+
         output_rows.append(
             {
                 "filepath": str(output_path),
@@ -209,6 +258,12 @@ def parse_args() -> argparse.Namespace:
         help="Extracted ESD dataset folder.",
     )
     parser.add_argument(
+        "--esd-zip",
+        type=Path,
+        default=None,
+        help="ESD archive downloaded by Kaggle/KaggleHub. Use this to avoid extracting the full dataset.",
+    )
+    parser.add_argument(
         "--output-dir",
         type=Path,
         default=OUTPUT_DIR,
@@ -252,6 +307,7 @@ def main() -> None:
 
     import_esd(
         esd_root=args.esd_root,
+        esd_zip=args.esd_zip,
         output_dir=args.output_dir,
         output_csv=args.output_csv,
         max_per_label=args.max_per_label,
