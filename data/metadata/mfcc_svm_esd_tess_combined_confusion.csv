@@ -1,0 +1,7 @@
+,pred_angry,pred_fearful,pred_happy,pred_neutral,pred_sad,pred_surprised
+true_angry,36,0,2,3,2,4
+true_fearful,1,82,0,0,1,0
+true_happy,12,1,22,3,1,8
+true_neutral,5,0,1,35,6,0
+true_sad,4,0,0,9,34,0
+true_surprised,6,0,9,1,3,27
