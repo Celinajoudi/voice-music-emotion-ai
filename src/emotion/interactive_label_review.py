@@ -92,8 +92,8 @@ def review_labels(review_csv: Path) -> None:
             print(f"Clip {index + 1} of {len(df)}")
             print(f"File: {row['filepath']}")
             print(f"Current label: {row['label']}")
-            print(f"Model prediction: {row['predicted_label']}")
-            print(f"Confidence: {row['confidence']}")
+            print(f"Model prediction: {display_value(row.get('predicted_label', ''))}")
+            print(f"Confidence: {display_value(row.get('confidence', ''))}")
             print("=" * 72)
 
             input("Press Enter to play...")
@@ -142,6 +142,13 @@ def parse_args() -> argparse.Namespace:
     )
 
     return parser.parse_args()
+
+
+def display_value(value) -> str:
+    if pd.isna(value) or str(value).strip() == "":
+        return "n/a"
+
+    return str(value)
 
 
 def main() -> None:
