@@ -6,5 +6,7 @@ data/raw/
 data/processed/
 data/separated/
 data/augmented/
+data/external/
+external/
 checkpoints/
 models/*.joblib
