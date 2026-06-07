@@ -1,9 +1,12 @@
 import argparse
 import csv
 import json
+import math
 from pathlib import Path
 
-import librosa
+import numpy as np
+import soundfile as sf
+from scipy.signal import resample_poly
 from transformers import pipeline
 
 DEFAULT_INPUT_DIR = Path("data/separated/htdemucs")
@@ -121,6 +124,28 @@ def collapse_predictions(predictions: list[dict], allowed_labels: list[str]) -> 
     )
 
 
+def load_audio(audio_path: Path) -> np.ndarray:
+    audio, sample_rate = sf.read(audio_path, dtype="float32")
+
+    if audio.ndim > 1:
+        audio = np.mean(audio, axis=1)
+
+    if sample_rate != TARGET_SR:
+        common_divisor = math.gcd(sample_rate, TARGET_SR)
+        audio = resample_poly(
+            audio,
+            TARGET_SR // common_divisor,
+            sample_rate // common_divisor,
+        ).astype(np.float32)
+
+    peak = np.max(np.abs(audio))
+
+    if peak > 0:
+        audio = audio / peak
+
+    return audio
+
+
 def predict_emotion(
     audio_path: Path,
     classifier,
@@ -129,11 +154,7 @@ def predict_emotion(
 ) -> dict:
     print(f"\nAnalyzing: {audio_path}")
 
-    audio, _ = librosa.load(
-        audio_path,
-        sr=TARGET_SR,
-        mono=True,
-    )
+    audio = load_audio(audio_path)
 
     predictions = classifier(audio, top_k=None)
     predictions = sorted(
@@ -223,19 +244,11 @@ def save_csv(rows: list[dict], output_csv: Path) -> None:
 
 def save_outputs(
     results: list[dict],
-    output_json: Path,
+    output_json: Path | None,
     output_csv: Path,
     accepted_csv: Path,
     review_csv: Path,
 ) -> None:
-    output_json.parent.mkdir(
-        parents=True,
-        exist_ok=True,
-    )
-
-    with open(output_json, "w") as jsonfile:
-        json.dump(results, jsonfile, indent=4)
-
     accepted_rows = [
         row for row in results
         if row["review_status"] == "accepted"
@@ -245,7 +258,17 @@ def save_outputs(
         if row["review_status"] == "manual_review"
     ]
 
-    print(f"\nSaved JSON: {output_json}")
+    if output_json is not None:
+        output_json.parent.mkdir(
+            parents=True,
+            exist_ok=True,
+        )
+
+        with open(output_json, "w") as jsonfile:
+            json.dump(results, jsonfile, indent=4)
+
+        print(f"\nSaved JSON: {output_json}")
+
     save_csv(results, output_csv)
     save_csv(accepted_rows, accepted_csv)
     save_csv(review_rows, review_csv)
@@ -294,6 +317,11 @@ def parse_args() -> argparse.Namespace:
         type=Path,
         default=DEFAULT_OUTPUT_JSON,
         help="Full prediction JSON output.",
+    )
+    parser.add_argument(
+        "--no-json",
+        action="store_true",
+        help="Skip JSON output and write CSV files only.",
     )
     parser.add_argument(
         "--output-csv",
@@ -354,7 +382,7 @@ def main() -> None:
 
     save_outputs(
         results,
-        args.output_json,
+        None if args.no_json else args.output_json,
         args.output_csv,
         args.accepted_csv,
         args.review_csv,
