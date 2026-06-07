@@ -21,8 +21,8 @@ EMOTIONS = [
 
 RANDOM_SEED = 42
 
-TEST_SIZE = 0.15
-VAL_SIZE = 0.15
+TEST_SIZE = 0.20
+VAL_SIZE = 0.25
 
 
 def extract_label(filename):
